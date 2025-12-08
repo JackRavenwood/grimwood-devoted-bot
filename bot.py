@@ -2,8 +2,12 @@ import os
 import random
 from datetime import datetime, timedelta, timezone
 
+import asyncio
+from aiohttp import web
+
 import discord
 from discord.ext import commands, tasks
+
 
 # ---------- CONFIG ----------
 # REPLACE THESE WITH YOUR REAL IDS
@@ -195,10 +199,28 @@ async def before_weekly_roll():
     await bot.wait_until_ready()
 
 
+async def health(request):
+    return web.Response(text="OK")
+
+
+async def main():
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("DISCORD_BOT_TOKEN not set")
+
+    # Set up tiny web server for Render
+    port = int(os.getenv("PORT", "10000"))
+    app = web.Application()
+    app.router.add_get("/", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    # Start Discord bot (this never returns unless bot disconnects)
+    await bot.start(token)
+
+
 if __name__ == "__main__":
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-if not TOKEN:
-    raise RuntimeError("DISCORD_BOT_TOKEN not set")
-
-bot.run(TOKEN)
-
+    asyncio.run(main())
