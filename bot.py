@@ -3,6 +3,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 import asyncio
+import json
 from aiohttp import web
 
 import discord
@@ -48,6 +49,32 @@ last_message_xp: dict[int, datetime] = {}
 last_reaction_xp: dict[int, datetime] = {}
 last_receive_xp: dict[int, datetime] = {}
 
+DATA_FILE = "weekly_xp.json"     # file to store XP between restarts
+
+
+def load_weekly_xp():
+    """Load weekly_xp from disk if present."""
+    global weekly_xp
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        # keys come back as strings from JSON
+        weekly_xp = {int(k): int(v) for k, v in raw.items()}
+        print(f"Loaded weekly XP for {len(weekly_xp)} users.")
+    except FileNotFoundError:
+        print("No existing weekly XP file, starting fresh.")
+    except Exception as e:
+        print(f"Failed to load weekly XP: {e}")
+
+
+def save_weekly_xp():
+    """Persist weekly_xp to disk."""
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(weekly_xp, f)
+    except Exception as e:
+        print(f"Failed to save weekly XP: {e}")
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -60,11 +87,13 @@ def is_leadership(member: discord.Member) -> bool:
 
 def add_xp(user_id: int, amount: int):
     weekly_xp[user_id] = weekly_xp.get(user_id, 0) + amount
+    save_weekly_xp()
 
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    load_weekly_xp()
     weekly_devoted_roll.start()
 
 
@@ -192,6 +221,7 @@ def reset_week():
     last_message_xp.clear()
     last_reaction_xp.clear()
     last_receive_xp.clear()
+    save_weekly_xp()
 
 
 @weekly_devoted_roll.before_loop
