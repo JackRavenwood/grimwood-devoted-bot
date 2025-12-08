@@ -196,5 +196,9 @@ async def before_weekly_roll():
 
 
 if __name__ == "__main__":
-    TOKEN = os.getenv("DISCORD_BOT_TOKEN") or "PUT_YOUR_TOKEN_HERE"
-    bot.run(TOKEN)
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("DISCORD_BOT_TOKEN not set")
+
+bot.run(TOKEN)
+
