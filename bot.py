@@ -1,6 +1,6 @@
 import os
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import asyncio
 import json
@@ -11,45 +11,57 @@ from discord.ext import commands, tasks
 
 
 # ---------- CONFIG ----------
-# REPLACE THESE WITH YOUR REAL IDS
+GUILD_ID = 893504850699116544
+ANNOUNCE_CHANNEL_ID = 1446118933278101535
 
-GUILD_ID = 893504850699116544          # your server ID
-ANNOUNCE_CHANNEL_ID = 1446118933278101535  # channel where winner is announced
+DEVOTED_ROLE_ID = 1446104532638761071
+KEEPER_ROLE_ID = 893506590567694356
+CULT_LEADER_ROLE_ID = 907661878308786257
 
-DEVOTED_ROLE_ID = 1446104532638761071       # @The Devoted
-KEEPER_ROLE_ID = 893506590567694356        # @Grimwood Keeper
-CULT_LEADER_ROLE_ID = 907661878308786257   # @Cult Leader
-
-# Arcane-matching XP rules
+# Arcane-matching XP rules (from your screenshot)
 MESSAGE_XP = 10
-MESSAGE_COOLDOWN = 90          # seconds
+MESSAGE_COOLDOWN = 90  # seconds
 
 REACTION_XP = 4
-REACTION_COOLDOWN = 300        # seconds
+REACTION_COOLDOWN = 300  # seconds
+
+VOICE_XP = 4
+VOICE_COOLDOWN = 600  # seconds (10 minutes)
+VOICE_MIN_MEMBERS = 3
 
 # Weekly roll time (UTC) – Friday 19:00
-WEEKLY_ROLL_DAY = 4            # 0=Mon ... 4=Fri
-WEEKLY_ROLL_HOUR = 19          # 19:00 UTC
+WEEKLY_ROLL_DAY = 4   # 0=Mon ... 4=Fri
+WEEKLY_ROLL_HOUR = 19 # 19:00 UTC
+
+# Optional: occasional random reactions (set 0.0 to disable)
+RANDOM_REACTION_CHANCE = 0.0
+RANDOM_REACTION_EMOJIS = ["🌲"]
 
 
 # ---------- BOT SETUP ----------
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
 intents.reactions = True
+intents.voice_states = True  # REQUIRED for voice tracking
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # user_id -> xp this week
 weekly_xp: dict[int, int] = {}
+
 # cooldown trackers
 last_message_xp: dict[int, datetime] = {}
 last_reaction_xp: dict[int, datetime] = {}
 last_receive_xp: dict[int, datetime] = {}
 
-DATA_FILE = "weekly_xp.json"     # file to store XP between restarts
+# voice cooldown tracker
+voice_last_award: dict[int, datetime] = {}
+
+
+# ---------- PERSISTENCE ----------
+DATA_FILE = "weekly_xp.json"
 
 
 def load_weekly_xp():
@@ -58,7 +70,6 @@ def load_weekly_xp():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        # keys come back as strings from JSON
         weekly_xp = {int(k): int(v) for k, v in raw.items()}
         print(f"Loaded weekly XP for {len(weekly_xp)} users.")
     except FileNotFoundError:
@@ -90,17 +101,55 @@ def add_xp(user_id: int, amount: int):
     save_weekly_xp()
 
 
+def reset_week():
+    weekly_xp.clear()
+    last_message_xp.clear()
+    last_reaction_xp.clear()
+    last_receive_xp.clear()
+    voice_last_award.clear()
+    save_weekly_xp()
+
+
+def voice_member_eligible(member: discord.Member, guild: discord.Guild) -> bool:
+    """Eligible for voice XP: in a voice channel, not muted/deafened, not AFK, not bot."""
+    if member.bot:
+        return False
+
+    vs = member.voice
+    if vs is None or vs.channel is None:
+        return False
+
+    # Anti-AFK: ignore AFK channel
+    if guild.afk_channel and vs.channel.id == guild.afk_channel.id:
+        return False
+
+    # If muted/deafened in any way, do not award
+    if vs.self_mute or vs.self_deaf:
+        return False
+    if vs.mute or vs.deaf:  # server mute/deaf
+        return False
+
+    return True
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     load_weekly_xp()
-    weekly_devoted_roll.start()
+
+    # Start loops once
+    if not weekly_devoted_roll.is_running():
+        weekly_devoted_roll.start()
+    if not voice_xp_tick.is_running():
+        voice_xp_tick.start()
 
 
 @bot.event
 async def on_message(message: discord.Message):
     # ignore DMs, bots, other guilds
-    if message.author.bot or message.guild is None or message.guild.id != GUILD_ID:
+    if message.guild is None or message.guild.id != GUILD_ID:
+        return
+    if message.author.bot:
         return
 
     user_id = message.author.id
@@ -110,6 +159,15 @@ async def on_message(message: discord.Message):
     if last is None or (now - last).total_seconds() >= MESSAGE_COOLDOWN:
         add_xp(user_id, MESSAGE_XP)
         last_message_xp[user_id] = now
+
+    # Optional random reaction "forest wink"
+    if RANDOM_REACTION_CHANCE > 0:
+        try:
+            if random.random() < RANDOM_REACTION_CHANCE:
+                emoji = random.choice(RANDOM_REACTION_EMOJIS)
+                await message.add_reaction(emoji)
+        except discord.HTTPException:
+            pass
 
     await bot.process_commands(message)
 
@@ -139,6 +197,35 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.abc.User):
         if last_rec is None or (now - last_rec).total_seconds() >= REACTION_COOLDOWN:
             add_xp(receiver_id, REACTION_XP)
             last_receive_xp[receiver_id] = now
+
+
+@tasks.loop(seconds=30)
+async def voice_xp_tick():
+    """Every 30s, award voice XP if eligible and 10-minute cooldown has elapsed."""
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+
+    now = now_utc()
+
+    # Build eligible members per voice channel
+    channel_to_members: dict[int, list[discord.Member]] = {}
+
+    for vc in guild.voice_channels:
+        eligible = [m for m in vc.members if voice_member_eligible(m, guild)]
+        if eligible:
+            channel_to_members[vc.id] = eligible
+
+    # Award only in channels meeting minimum eligible members
+    for members in channel_to_members.values():
+        if len(members) < VOICE_MIN_MEMBERS:
+            continue
+
+        for member in members:
+            last = voice_last_award.get(member.id)
+            if last is None or (now - last).total_seconds() >= VOICE_COOLDOWN:
+                add_xp(member.id, VOICE_XP)
+                voice_last_award[member.id] = now
 
 
 @tasks.loop(minutes=5)
@@ -176,9 +263,7 @@ async def weekly_devoted_roll():
         candidates.append((member, xp))
 
     if not candidates:
-        await announce_channel.send(
-            "💠 No eligible walkers gained XP this week. The Path watches in silence."
-        )
+        await announce_channel.send("💠 No eligible walkers gained XP this week. The Path watches in silence.")
         reset_week()
         return
 
@@ -189,7 +274,7 @@ async def weekly_devoted_roll():
     # Randomly choose one of the top three
     winner, winner_xp = random.choice(top_three)
 
-    # Remove Devoted from everyone
+    # Remove Devoted from everyone who has it
     for member in guild.members:
         if devoted_role in member.roles:
             try:
@@ -203,25 +288,23 @@ async def weekly_devoted_roll():
     except discord.HTTPException:
         pass
 
-    # Build top 3 listing
     lines = [f"- {m.mention} — **{xp} XP**" for m, xp in top_three]
 
-    await announce_channel.send(
-        "💠 **The Path has rolled the bones.**\n"
-        "From this week’s three most devoted walkers, one name was drawn.\n\n"
-        f"**The Devoted** is {winner.mention} with **{winner_xp} XP**.\n\n"
-        "**Top three this week:**\n" + "\n".join(lines)
+    announcement = (
+        "💠 **The Devoted has been chosen.**\n\n"
+        "All week, the Grimwood listened.\n"
+        "Every message, every echo, every spark of life along the Path was counted.\n\n"
+        f"From the three loudest voices beneath the boughs, the forest cast its lot and marked "
+        f"{winner.mention} as **The Devoted**.\n"
+        f"They walked with **{winner_xp} XP** worth of footsteps this week.\n\n"
+        "__This week’s contenders:__\n"
+        + "\n".join(lines)
+        + "\n\n"
+        "_When the next Friday falls, the bones will be rolled again._"
     )
 
+    await announce_channel.send(announcement)
     reset_week()
-
-
-def reset_week():
-    weekly_xp.clear()
-    last_message_xp.clear()
-    last_reaction_xp.clear()
-    last_receive_xp.clear()
-    save_weekly_xp()
 
 
 @weekly_devoted_roll.before_loop
@@ -238,7 +321,7 @@ async def main():
     if not token:
         raise RuntimeError("DISCORD_BOT_TOKEN not set")
 
-    # Set up tiny web server for Render
+    # Tiny web server for Render
     port = int(os.getenv("PORT", "10000"))
     app = web.Application()
     app.router.add_get("/", health)
@@ -248,7 +331,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # Start Discord bot (this never returns unless bot disconnects)
+    # Start Discord bot
     await bot.start(token)
 
 
