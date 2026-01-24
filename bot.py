@@ -291,11 +291,10 @@ async def weekly_devoted_roll():
     lines = [f"- {m.mention} — **{xp} XP**" for m, xp in top_three]
 
     announcement = (
-        "💠 **The Devoted has been chosen.**\n\n"
-        "All week, the Grimwood listened.\n"
-        "Every message, every echo, every spark of life along the Path was counted.\n\n"
-        f"From the three loudest voices beneath the boughs, the forest cast its lot and marked "
-        f"{winner.mention} as **The Devoted**.\n"
+        "💠 **The Bestower has rolled the bones, The Devoted has been chosen.**\n\n"
+        "From this week’s three most devoted walkers, one name was drawn.\n"
+
+        f"{winner.mention} is now **The Devoted**.\n"
         f"They walked with **{winner_xp} XP** worth of footsteps this week.\n\n"
         "__This week’s contenders:__\n"
         + "\n".join(lines)
