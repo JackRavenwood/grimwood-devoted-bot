@@ -19,15 +19,18 @@ KEEPER_ROLE_ID = 893506590567694356
 CULT_LEADER_ROLE_ID = 907661878308786257
 
 # Arcane-matching XP rules (from your screenshot)
-MESSAGE_XP = 10
-MESSAGE_COOLDOWN = 90  # seconds
+MESSAGE_XP_MIN = 10
+MESSAGE_XP_MAX = 15
+MESSAGE_COOLDOWN = 60          # seconds
 
-REACTION_XP = 4
-REACTION_COOLDOWN = 300  # seconds
-
-VOICE_XP = 4
-VOICE_COOLDOWN = 600  # seconds (10 minutes)
+VOICE_XP_MIN = 4
+VOICE_XP_MAX = 8
+VOICE_COOLDOWN = 300           # seconds
 VOICE_MIN_MEMBERS = 3
+
+REACTION_XP_MIN = 4
+REACTION_XP_MAX = 8
+REACTION_COOLDOWN = 300        # seconds
 
 # Weekly roll time (UTC) – Friday 19:00
 WEEKLY_ROLL_DAY = 4   # 0=Mon ... 4=Fri
@@ -157,7 +160,7 @@ async def on_message(message: discord.Message):
     last = last_message_xp.get(user_id)
 
     if last is None or (now - last).total_seconds() >= MESSAGE_COOLDOWN:
-        add_xp(user_id, MESSAGE_XP)
+        add_xp(user_id, random.randint(MESSAGE_XP_MIN, MESSAGE_XP_MAX))
         last_message_xp[user_id] = now
 
     # Optional random reaction "forest wink"
@@ -187,7 +190,7 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.abc.User):
     reactor_id = user.id
     last_r = last_reaction_xp.get(reactor_id)
     if last_r is None or (now - last_r).total_seconds() >= REACTION_COOLDOWN:
-        add_xp(reactor_id, REACTION_XP)
+        add_xp(reactor_id, random.randint(REACTION_XP_MIN, REACTION_XP_MAX))
         last_reaction_xp[reactor_id] = now
 
     # Message author XP (receiver)
@@ -195,13 +198,13 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.abc.User):
         receiver_id = message.author.id
         last_rec = last_receive_xp.get(receiver_id)
         if last_rec is None or (now - last_rec).total_seconds() >= REACTION_COOLDOWN:
-            add_xp(receiver_id, REACTION_XP)
+            add_xp(receiver_id, random.randint(REACTION_XP_MIN, REACTION_XP_MAX))
             last_receive_xp[receiver_id] = now
 
 
 @tasks.loop(seconds=30)
 async def voice_xp_tick():
-    """Every 30s, award voice XP if eligible and 10-minute cooldown has elapsed."""
+    """Every 30s, award voice XP if eligible and VOICE_COOLDOWN has elapsed."""
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         return
@@ -224,7 +227,7 @@ async def voice_xp_tick():
         for member in members:
             last = voice_last_award.get(member.id)
             if last is None or (now - last).total_seconds() >= VOICE_COOLDOWN:
-                add_xp(member.id, VOICE_XP)
+                add_xp(member.id, random.randint(VOICE_XP_MIN, VOICE_XP_MAX))
                 voice_last_award[member.id] = now
 
 
@@ -293,7 +296,6 @@ async def weekly_devoted_roll():
     announcement = (
         "💠 **The Bestower has rolled the bones, The Devoted has been chosen.**\n\n"
         "From this week’s three most devoted walkers, one name was drawn.\n"
-
         f"{winner.mention} is now **The Devoted**.\n"
         f"They walked with **{winner_xp} XP** worth of footsteps this week.\n\n"
         "__This week’s contenders:__\n"
